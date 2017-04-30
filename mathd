@@ -1,0 +1,236 @@
+#!/usr/bin/env python
+# A python script for running daemonized Wolfram Language expressions in the command line
+
+
+import os
+import sys
+import argparse
+import pexpect
+import errno
+import signal
+
+
+# ---------- Argument Parsing ----------
+argparser = argparse.ArgumentParser(
+    description='A python script for running daemonized Wolfram Language expressions in the command line (DAEMON).',
+    epilog='Created by Harrison Totty <harrisont@wolfram.com>')
+
+argparser.add_argument('command', 
+    choices=['start', 'stop', 'status'], 
+    help='the daemon control command to execute')
+
+args = argparser.parse_args()
+# --------------------------------------
+
+
+# ---------- Global Variables ----------
+runpath = os.path.expanduser('~/.cache/mathd')
+logfile = os.path.join(runpath, 'mathd.log')
+inpipe = os.path.join(runpath, 'pipe.in')
+outpipe = os.path.join(runpath, 'pipe.out')
+pidfile = os.path.join(runpath, 'mathd.pid')
+executablepath = '/usr/local/bin/WolframKernel'
+inputregex = 'In\\[.*\\]:= '
+outputregex = 'Out\\[.*\\]= '
+evaltimeout = 300.0
+# --------------------------------------
+
+
+
+def main():
+    '''
+    The main entry point of the script.
+    '''
+    if not os.path.exists(runpath):
+        try:
+            os.mkdir(runpath)
+        except OSError:
+            print('ERROR: Unable to create running directory at ' + runpath + '...')
+            sys.exit(2)
+
+    if args.command == 'start':
+        do_start()
+    elif args.command == 'stop':
+        do_stop()
+    elif args.command == 'status':
+        do_status()
+    else:
+        print('ERROR: Unsupported command...')
+
+
+
+def do_start():
+    '''
+    Starts the mathd service, restarting it if necessary.
+    '''
+    if pid_exists(get_pid()):
+        print('mathd service already running...')
+        do_stop()
+        print('Starting mathd service...')
+
+    forkpid = os.fork()
+    if forkpid == 0:
+        with open(logfile, 'w') as logf:
+            logf.write('Starting mathd service...\n')
+
+        with open(pidfile, 'w') as pf:
+            pf.write(str(os.getpid()) + '\n')
+
+        daemonize_kernel()
+    else:
+        print('mathd service started...')
+        return
+
+
+
+def daemonize_kernel():
+    '''
+    Launches a controlled daemonized Wolfram Kernel.
+    '''
+    # Create the necessary files in the running directory
+    if not os.path.exists(inpipe):
+        try:
+            os.mkfifo(inpipe)
+        except OSError:
+            sys.exit(2)
+    if not os.path.exists(outpipe):
+        try:
+            os.mkfifo(outpipe)
+        except OSError:
+            sys.exit(2)
+
+    # Spawn the kernel process and wait for the input prompt
+    with open(logfile, 'a') as logf:
+        logf.write('Initializing Wolfram kernel...\n')
+    processstring = executablepath
+    kernel = pexpect.spawn(processstring)
+    try:
+        kernel.expect(inputregex, timeout=60.0)
+        with open(logfile, 'a') as logf:
+            logf.write('Kernel initialization complete...\n')
+    except pexpect.TIMEOUT:
+        with open(logfile, 'a') as logf:
+            logf.write('Kernel initialization timed-out...\n')
+        kernel.close()
+        sys.exit(3)
+
+    # Run a test evaluation
+    with open(logfile, 'a') as logf:
+        logf.write('Executing test evaluation...\n')
+    kernel.sendline('Integrate[Sin[x],x]')
+    kernel.expect(outputregex, timeout=60.0)
+    with open(logfile, 'a') as logf:
+        logf.write('Test evaluation result >> ' + kernel.readline().strip() + '\n')
+    kernel.expect(inputregex, timeout=60.0)
+    
+    # Enter the main loop
+    with open(logfile, 'a') as logf:
+        logf.write('Listening for evaluations...\n')
+    while True:
+        with open(inpipe, 'r') as inf:
+            kernel.sendline(inf.read().strip())
+            try:
+                index = kernel.expect([outputregex, inputregex], timeout=evaltimeout)
+            except pexpect.TIMEOUT:
+                with open(logfile, 'a') as logf:
+                    logf.write('Kernel evaluation timed-out...\n')
+                kernel.close()
+                sys.exit(3)
+        if index == 0:
+            with open(outpipe, 'a') as outf:
+                outf.write(kernel.readline().strip() + '\n')
+            try:
+                kernel.expect(inputregex, timeout=60.0)
+            except pexpect.TIMEOUT:
+                with open(logfile, 'a') as logf:
+                    logf.write('Kernel prompt timed-out...\n')
+                kernel.close()
+                sys.exit(3)
+        else:
+            with open(outpipe, 'a') as outf:
+                outf.write('')
+
+
+def do_stop():
+    '''
+    Stops the mathd service if it is running.
+    '''
+    pid = get_pid()
+    if pid_exists(pid):
+        print('Stopping mathd service...')
+        with open(logfile, 'a') as logf:
+            logf.write('Stopping mathd service...\n')
+        try:
+            os.kill(pid, signal.SIGKILL)
+            print('mathd service stopped...')
+            with open(logfile, 'a') as logf:
+                logf.write('mathd service stopped...\n')
+        except:
+            print('ERROR: Unable to stop mathd service...')
+            with open(logfile, 'a') as logf:
+                logf.write('ERROR: Unable to stop mathd service...\n')
+            sys.exit(1)
+        return
+    else:
+        print('mathd service not running...')
+        sys.exit(1)
+
+
+
+def do_status():
+    '''
+    Prints whether the mathd service is running.
+    '''
+    if pid_exists(get_pid()):
+        print('mathd service running...')
+        return
+    else:
+        print('mathd service stopped...')
+        return
+
+
+
+def get_pid():
+    '''
+    Gets the PID of the daemonized python script by reading the pidfile.
+    '''
+    if os.path.isfile(pidfile):
+        try:
+            with open(pidfile, 'r') as pf:
+                pid = int(pf.read().strip())
+            return pid
+        except:
+            print('ERROR: Unable to read pid file at ' + pidfile + '...')
+            sys.exit(2)
+    else:
+        return -1
+
+
+
+def pid_exists(pid):
+    '''
+    Checks whether the given PID exists as a running process.
+    '''
+    if pid < 0:
+        return False
+    if pid == 0:
+        raise ValueError('invalid PID 0')
+    try:
+        os.kill(pid, 0)
+    except OSError as err:
+        if err.errno == errno.ESRCH:
+            return False
+        elif err.errno == errno.EPERM:
+            return True
+        else:
+            raise
+    else:
+        return True
+
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(1)
