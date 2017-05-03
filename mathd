@@ -123,7 +123,6 @@ def daemonize_kernel():
     kernel.expect(inputregex, timeout=60.0)
     with open(logfile, 'a') as logf:
         logf.write('Test evaluation result >> ' + kernel.before[:-4].strip() + '\n')
-    # kernel.expect(inputregex, timeout=60.0)
     
     # Enter the main loop
     with open(logfile, 'a') as logf:
@@ -151,11 +150,6 @@ def daemonize_kernel():
         else:
             with open(outpipe, 'a') as outf:
                 outf.write('')
-
-
-def escape(s):
-    ch = (ord(c) for c in s)
-    return ''.join(('\\x%02x' % c) if c <= 255 else ('\\u%04x' % c) for c in ch)
 
 
 def do_stop():
