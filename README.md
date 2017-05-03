@@ -14,4 +14,6 @@ If the expression returns a value, `mathc` will print the value to stdout. Other
 ## How it works
 Upon executing `mathd start`, the daemon script forks itself and launches a Wolfram Kernel, with which it communicates using the `pexpect` library. The daemon script then waits for input by attaching itself to a FIFO (`~/.cache/mathd/pipe.in`). When an input arrives, it forwards the incoming expression to the kernel process for evaluation and then back to another FIFO (`~/.cache/mathd/pipe.out`) when the result it recieved. The `mathc` script simply reads and writes to these FIFO files.
 
+## Changelog
 
+    05/03/17 - Added multiline output support.

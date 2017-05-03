@@ -104,6 +104,7 @@ def daemonize_kernel():
         logf.write('Initializing Wolfram kernel...\n')
     processstring = executablepath
     kernel = pexpect.spawn(processstring)
+    kernel.setecho(False)
     try:
         kernel.expect(inputregex, timeout=60.0)
         with open(logfile, 'a') as logf:
@@ -119,9 +120,10 @@ def daemonize_kernel():
         logf.write('Executing test evaluation...\n')
     kernel.sendline('Integrate[Sin[x],x]')
     kernel.expect(outputregex, timeout=60.0)
-    with open(logfile, 'a') as logf:
-        logf.write('Test evaluation result >> ' + kernel.readline().strip() + '\n')
     kernel.expect(inputregex, timeout=60.0)
+    with open(logfile, 'a') as logf:
+        logf.write('Test evaluation result >> ' + kernel.before[:-4].strip() + '\n')
+    # kernel.expect(inputregex, timeout=60.0)
     
     # Enter the main loop
     with open(logfile, 'a') as logf:
@@ -137,10 +139,10 @@ def daemonize_kernel():
                 kernel.close()
                 sys.exit(3)
         if index == 0:
-            with open(outpipe, 'a') as outf:
-                outf.write(kernel.readline().strip() + '\n')
             try:
                 kernel.expect(inputregex, timeout=60.0)
+                with open(outpipe, 'a') as outf:
+                    outf.write(kernel.before[:-4].strip() + '\n')
             except pexpect.TIMEOUT:
                 with open(logfile, 'a') as logf:
                     logf.write('Kernel prompt timed-out...\n')
@@ -149,6 +151,11 @@ def daemonize_kernel():
         else:
             with open(outpipe, 'a') as outf:
                 outf.write('')
+
+
+def escape(s):
+    ch = (ord(c) for c in s)
+    return ''.join(('\\x%02x' % c) if c <= 255 else ('\\u%04x' % c) for c in ch)
 
 
 def do_stop():
