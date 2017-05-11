@@ -19,6 +19,35 @@ argparser.add_argument('command',
     choices=['start', 'stop', 'status'], 
     help='the daemon control command to execute')
 
+argparser.add_argument('-e', '--eval', 
+    metavar='E',
+    default='Nothing', 
+    help='an initial Wolfram Language expression to evaluate at startup',
+    dest='evaluate_expression')
+
+argparser.add_argument('--history-length', 
+    metavar='L',
+    default='Infinity', 
+    help='the maximum number of outputs to store in the output history (Infinity)',
+    dest='history_length')
+
+argparser.add_argument('-t','--timeout', 
+    metavar='T',
+    type=int,
+    default=300, 
+    help='the max number of seconds to wait for an expression to evaluate (300)',
+    dest='timeout')
+
+argparser.add_argument('--log-evals',
+    action='store_true',
+    help='enable logging of evaluations',
+    dest='log_evals')
+
+argparser.add_argument('--enable-graphics',
+    action='store_true',
+    help='enable graphical output',
+    dest='enable_graphics')
+
 args = argparser.parse_args()
 # --------------------------------------
 
@@ -32,7 +61,6 @@ pidfile = os.path.join(runpath, 'mathd.pid')
 executablepath = '/usr/local/bin/WolframKernel'
 inputregex = 'In\\[.*\\]:= '
 outputregex = 'Out\\[.*\\]= '
-evaltimeout = 300.0
 # --------------------------------------
 
 
@@ -119,32 +147,114 @@ def daemonize_kernel():
     with open(logfile, 'a') as logf:
         logf.write('Executing test evaluation...\n')
     kernel.sendline('Integrate[Sin[x],x]')
-    kernel.expect(outputregex, timeout=60.0)
-    kernel.expect(inputregex, timeout=60.0)
+    try:
+        kernel.expect(outputregex, timeout=30.0)
+        kernel.expect(inputregex, timeout=30.0)
+    except pexpect.TIMEOUT:
+        with open(logfile, 'a') as logf:
+            logf.write('Test evaluation failed!\n')
+        kernel.close()
+        sys.exit(3)
+
+    # Set the history length
     with open(logfile, 'a') as logf:
-        logf.write('Test evaluation result >> ' + kernel.before[:-4].strip() + '\n')
+        logf.write('Setting history length to ' + args.history_length + '...\n')
+    kernel.sendline('$HistoryLength = ' + args.history_length + ';')
+    try:
+        kernel.expect(inputregex, timeout=30.0)
+    except pexpect.TIMEOUT:
+        with open(logfile, 'a') as logf:
+            logf.write('Unable to set history length!\n')
+        kernel.close()
+        sys.exit(3)
+
+    # Enable graphics, if necessary
+    if args.enable_graphics:
+        with open(logfile, 'a') as logf:
+            logf.write('Enabling graphics...\n')
+        kernel.sendline('<<JavaGraphics`')
+        try:
+            kernel.expect(inputregex, timeout=args.timeout)
+        except pexpect.TIMEOUT:
+            with open(logfile, 'a') as logf:
+                logf.write('Unable to enable graphics!\n')
+            kernel.close()
+            sys.exit(4)
     
+    # Reset input/output
+    with open(logfile, 'a') as logf:
+        logf.write('Resetting In/Out symbols...\n')
+    kernel.sendline('Unprotect[In, Out]; Clear[In, Out]; Protect[In, Out]; $Line = 0;')
+    try:
+        kernel.expect(inputregex, timeout=30.0)
+    except pexpect.TIMEOUT:
+        with open(logfile, 'a') as logf:
+            logf.write('Unable to reset In/Out symbols!\n')
+        kernel.close()
+        sys.exit(3)
+
+    # Run an initial expression evaluation, if necessary
+    if args.evaluate_expression != 'Nothing' and args.evaluate_expression != 'None':
+        with open(logfile, 'a') as logf:
+            logf.write('Executing initial evaluation...\n')
+            if args.log_evals:
+                logf.write('In[1] := ' + args.evaluate_expression + '\n')
+        kernel.sendline(args.evaluate_expression)
+        try:
+            index = kernel.expect([outputregex, inputregex], timeout=args.timeout)
+        except pexpect.TIMEOUT:
+            with open(logfile, 'a') as logf:
+                logf.write('Initial evaluation timed-out...\n')
+            kernel.close()
+            sys.exit(3)
+        if index == 0:
+            try:
+                outputprompt = 'Out[1] = '
+                kernel.expect(inputregex, timeout=30.0)
+                outputexpression = kernel.before[:-4].strip()
+                if args.log_evals:
+                    with open(logfile, 'a') as logf:
+                        logf.write(outputprompt + ' ' + outputexpression + '\n')
+            except pexpect.TIMEOUT:
+                with open(logfile, 'a') as logf:
+                    logf.write('Kernel input prompt timed-out...\n')
+                kernel.close()
+                sys.exit(3)
+
     # Enter the main loop
     with open(logfile, 'a') as logf:
         logf.write('Listening for evaluations...\n')
     while True:
         with open(inpipe, 'r') as inf:
-            kernel.sendline(inf.read().strip())
-            try:
-                index = kernel.expect([outputregex, inputregex], timeout=evaltimeout)
-            except pexpect.TIMEOUT:
-                with open(logfile, 'a') as logf:
-                    logf.write('Kernel evaluation timed-out...\n')
-                kernel.close()
-                sys.exit(3)
+            inputexpression = inf.read().strip()
+        if args.log_evals:
+            with open(logfile, 'a') as logf:
+                logf.write(kernel.match.group(0).replace(']:=','] :=') + ' ' + inputexpression + '\n')
+        kernel.sendline(inputexpression)
+        try:
+            index = kernel.expect([outputregex, inputregex], timeout=args.timeout)
+        except pexpect.TIMEOUT:
+            with open(logfile, 'a') as logf:
+                logf.write('Kernel evaluation timed-out...\n')
+            with open(outpipe, 'a') as outf:
+                outf.write('Kernel evaluation timed-out...\n')
+            kernel.close()
+            sys.exit(3)
         if index == 0:
             try:
-                kernel.expect(inputregex, timeout=60.0)
+                outputprompt = kernel.match.group(0).replace(']=','] =')
+                kernel.expect(inputregex, timeout=30.0)
+                outputexpression = kernel.before[:-4].strip()
                 with open(outpipe, 'a') as outf:
-                    outf.write(kernel.before[:-4].strip() + '\n')
+                    outf.write(outputexpression + '\n')
+                if args.log_evals:
+                    with open(logfile, 'a') as logf:
+                        logf.write(outputprompt + ' ' + outputexpression + '\n')
             except pexpect.TIMEOUT:
                 with open(logfile, 'a') as logf:
-                    logf.write('Kernel prompt timed-out...\n')
+                    logf.write('Kernel input prompt timed-out...\n')
+                with open(outpipe, 'a') as outf:
+                    outf.write('Kernel input prompt timed-out...\n')
                 kernel.close()
                 sys.exit(3)
         else:
