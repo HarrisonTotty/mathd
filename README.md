@@ -25,7 +25,7 @@ If the expression returns a value, `mathc` will print the value to stdout. Other
      
     -e EXPR, --eval EXPR    : Evaluates the specified expression after the Wolfram kernel is finished initializing.
      
-    --history-length        : Sets the $HistoryLength of the initialized Wolfram kernel to the specified value.
+    --history-length L      : Sets the $HistoryLength of the initialized Wolfram kernel to the specified value.
                             : Default -> "Infinity"
      
     -t SEC, --timeout SEC   : Sets the evaluation timeout, in seconds.
